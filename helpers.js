@@ -8,8 +8,8 @@ const xml2js = require('xml2js');
 
 const parser = new xml2js.Parser({ explicitArray: false });
 
-async function getFilePath(token, file_id) {
-	const url = `https://api.telegram.org/bot${token}/getFile`;
+async function getFilePath(file_id) {
+	const url = `https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/getFile`;
 
 	const response = await fetch(url, {
 		method: 'POST',
@@ -28,8 +28,8 @@ async function getFilePath(token, file_id) {
 	}
 }
 
-async function getFileBuffer(token, file_path) {
-	const getFileURL = `https://api.telegram.org/file/bot${token}/${file_path}`;
+async function getFileBuffer(file_path) {
+	const getFileURL = `https://api.telegram.org/file/bot${process.env.TELEGRAM_TOKEN}/${file_path}`;
 
 	const file = await fetch(getFileURL, {
 		method: 'GET',
@@ -83,21 +83,24 @@ function STT(pathToFile) {
 			lang: 'ru-RU',
 		}, function (err, httpResponse, xml) {
 			if (err) {
-				console.log('Ошибка:', err);
+				reject(`Ошибка speech to text: ${err}`);
 			} else {
-				console.log('Распознанный текст:', xml);
 				parser.parseString(xml, (err, result) => {
 					if (err) {
-						console.error('Ошибка парсинга XML:', err);
+						reject(`Ошибка парсинга XML: ${err}`);
 					} else {
-						// console.log('Результат парсинга:', result.recognitionResults.variant);
+						console.log(result.recognitionResults.$);
 
-						if (Array.isArray(result.recognitionResults.variant)) {
-							resolve(result.recognitionResults.variant[0]._)
+						if ('$' in result.recognitionResults && result.recognitionResults.$.success === '0') {
+							reject('Кажется, выотправили пустое сообщение, или я не смог его расшифровать \ud83e\udee3');
 						} else {
-							resolve(result.recognitionResults.variant._)
+							if (Array.isArray(result.recognitionResults.variant)) {
+								resolve(result.recognitionResults.variant[0]._)
+							} else {
+								resolve(result.recognitionResults.variant._)
+							}
 						}
-
+						
 						fs.unlinkSync(pathToFile);
 					}
 				});
