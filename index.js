@@ -1,15 +1,25 @@
 require('dotenv').config();
 
 const helpers = require('./helpers');
+const options = require('./options');
+const DB = require('./database');
 
 const TelegramAPI = require('node-telegram-bot-api');
 
-const token = "6684187305:AAGxVZLUZ7xa-P-JvUmo97BRHkTRV4ZQfhM";
+const bot = new TelegramAPI(process.env.TELEGRAM_TOKEN, {polling: true});
 
-const bot = new TelegramAPI(token, {polling: true});
+const createTasksData = async (chatID) => {
+	// const res = await DB.get();
 
-const createTasksData = (chatID) => {
+	// if (res.status) {
+	// 	const tasks = DB.getTasksByToday(res.data);
 
+	// 	const result = DB.createResultList(tasks);
+
+	// 	bot.sendMessage(chatID, result);
+	// } else {
+	// 	bot.sendMessage(chatID, res.data, keyBoards.error);
+	// }
 };
 
 const onStart = (chatID) => {
@@ -21,19 +31,28 @@ const textMesssagesAccess = {
 	'/what_i_do_today': createTasksData,
 }
 
-// bot.setChatMenuButton(chatID, {
-// 	menu_button: {
-// 		type: 'default'
-// 	}
-// })
+const keyBoards = {
+	success: {
+		reply_markup: JSON.stringify({
+			inline_keyboard: options.successBtns,
+		})
+	},
+	error: {
+		reply_markup: JSON.stringify({
+			inline_keyboard: options.errorBtns,
+		})
+	}
+}
+
+let lastUserMsgId = 0;
+
+bot.setMyCommands(options.commands);
 
 bot.on('message', async (msg) => {
-	console.log(msg);
 	const chatID = msg.chat.id;
-	const dateMS = new Date(msg.date);
+	lastUserMsgId = msg.message_id;
 
 	if ('text' in msg) {
-		console.log(typeof textMesssagesAccess[msg.text]);
 		if (typeof textMesssagesAccess[msg.text] === 'function') {
 			textMesssagesAccess[msg.text](chatID);
 		} else {
@@ -45,25 +64,74 @@ bot.on('message', async (msg) => {
 		const loadingMsg = await bot.sendMessage(chatID, 'Бот обрабатывает запрос...');
 		const loadingMsgID = loadingMsg.message_id;
 
-		const file_path = await helpers.getFilePath(token, msg.voice.file_id);
-		console.log(file_path);
+		const file_path = await helpers.getFilePath(msg.voice.file_id);
 
 		if (!file_path) {
 			return;
 		}
 
-		const buffer = await helpers.getFileBuffer(token, file_path);
+		const buffer = await helpers.getFileBuffer(file_path);
 
 		helpers.saveFile(file_path, buffer)
 			.then((pathToFile) => helpers.STT(pathToFile))
 			.then(async (text) => {
-				// bot.sendMessage(chatID, text);
 				const responce = await helpers.sendMsgToGPT(text);
 
+				if (!responce) {
+					bot.sendMessage(chatID, `Ошибка некорректный ответ от GPT: ${responce}`, keyBoards.error);
+				} else {
+					bot.sendMessage(chatID, responce, keyBoards.success);
+				}
+			})
+			.catch((err) => {
+				bot.sendMessage(chatID, err, keyBoards.error);
+			})
+			.finally(() => {
 				bot.deleteMessage(chatID, loadingMsgID);
-				bot.sendMessage(chatID, responce);
 			});
-
-		
 	}
-})
+});
+
+const approveMsgData = async (msg) => {
+	const obj = JSON.parse(msg.message.text);
+	obj.time = msg.message.date;
+	obj.day = new Date(obj.time * 1000).getDate();
+
+	await DB.post(obj);
+
+	bot.answerCallbackQuery(msg.id)
+		.then(() => {
+			console.log('callback_query обработано');
+
+			bot.deleteMessage(msg.message.chat.id, msg.message.message_id);
+			bot.sendMessage(msg.message.chat.id, msg.message.text);
+		})
+		.catch((err) => {
+		console.error('Ошибка при обработке callback_query:', err);
+		});
+};
+
+const rejectMsgData = (msg) => {
+	bot.deleteMessage(msg.message.chat.id, msg.message.message_id);
+	bot.deleteMessage(msg.message.chat.id, lastUserMsgId);
+};
+
+const onError = (msg) => {
+	bot.deleteMessage(msg.message.chat.id, msg.message.message_id);
+	bot.deleteMessage(msg.message.chat.id, lastUserMsgId);
+};
+
+const callbackFuncs = {
+	'approve': approveMsgData,
+	'reject': rejectMsgData,
+	'error_checked': onError,
+}
+
+bot.on('callback_query', (msg) => {
+	console.log('callback_query');
+	const cb = msg.data;
+
+	if (cb in callbackFuncs && typeof callbackFuncs[cb] === 'function') {
+		callbackFuncs[cb](msg);
+	}
+});
